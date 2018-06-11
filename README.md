@@ -73,7 +73,3 @@ You can find the spring, gradle, envoy ... versions in the corresponding resourc
 * Develop a Java filter that adds the host header from the uri's host so microservice name can be written directly on the URL
 * Include some microservice written in another programming language
 * Test another envoy features like deployments, TLS ...
-
-## Contributing
-
-This is a POC so the most of functionality / use cases it includes the better. If you want to test / configure some new functionality not included or simply play around with Envoy you can contact me at jarodriguez@paradigmadigital.com and we can see some interesting Envoy test cases.
