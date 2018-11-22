@@ -7,6 +7,9 @@ metadata:
   name: ingress
 data:
   envoy_config.yaml: |
+    cluster_manager:
+      outlier_detection:
+        event_log_path: "/dev/stdout"
     static_resources:
       listeners:
       - address:
