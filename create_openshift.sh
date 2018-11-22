@@ -9,3 +9,4 @@ oc create -f ./petstore/openshift/resources.yaml
 oc create -f ./pet/openshift/resources.yaml
 oc create -f ./ingress/openshift/resources.yaml
 oc create -f ./zipkin/openshift/resources.yaml
+oc create -f ./secure-ingress/openshift/resources.yaml
