@@ -1,0 +1,232 @@
+#########################
+##      CONFIGMAP      ##
+#########################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secure-ingress
+data:
+  envoy_config.yaml: |
+    cluster_manager:
+      outlier_detection:
+        event_log_path: "/dev/stdout"
+    static_resources:
+      listeners:
+      - address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 10000
+        filter_chains:
+        - filters:
+          - name: envoy.http_connection_manager
+            config:
+              tracing:
+                operation_name: ingress
+              codec_type: auto
+              stat_prefix: ingress_http
+              route_config:
+                name: ingress_route
+                virtual_hosts:
+                - name: service
+                  domains:
+                  - "*"
+                  routes:
+                  - match:
+                      prefix: "/pet/"
+                    route:
+                      cluster: pet
+                      prefix_rewrite: "/"
+                  - match:
+                      prefix: "/petstore/"
+                    route:
+                      cluster: petstore
+                      prefix_rewrite: "/"
+              http_filters:
+              - name: envoy.filters.http.jwt_authn
+                config:
+                  providers:
+                    jwt_provider:
+                      issuer: test
+                      local_jwks:
+                        inline_string: "{\"keys\":[{\"use\": \"sig\",\"alg\": \"RS256\",\"kid\": \"test\",\"kty\": \"RSA\",\"n\": \"4f5wg5l2hKsTeNem_V41fGnJm6gOdrj8ym3rFkEU_wT8RDtnSgFEZOQpHEgQ7JL38xUfU0Y3g6aYw9QT0hJ7mCpz9Er5qLaMXJwZxzHzAahlfA0icqabvJOMvQtzD6uQv6wPEyZtDTWiQi9AXwBpHssPnpYGIn20ZZuNlX2BrClciHhCPUIIZOQn_MmqTD31jSyjoQoV7MhhMTATKJx2XrHhR-1DcKJzQBSTAGnpYVaqpsARap-nwRipr3nUTuxyGohBTSmjJ2usSeQXHI3bODIRe1AuTyHceAbewn8b462yEWKARdpd9AjQW5SIVPfdsz5B6GlYQ5LdYKtznTuy7w\",\"e\": \"AQAB\"}]}"
+                      forward: true
+                      forward_payload_header: "plain-authorization"
+                  rules:
+                  - match:
+                      prefix: /
+                    requires:
+                      provider_and_audiences:
+                        provider_name: jwt_provider
+                        audiences:
+                          books.read
+              - name: envoy.router
+                config:
+                  start_child_span: true
+      clusters:
+      - name: sds
+        connect_timeout: 0.50s
+        type: strict_dns
+        lb_policy: round_robin
+        hosts:
+        - socket_address:
+            address: sds
+            port_value: 80
+      - name: pet
+        connect_timeout: 0.50s
+        type: eds
+        lb_policy: round_robin
+        eds_cluster_config:
+          eds_config:
+            api_config_source:
+              api_type: REST_LEGACY
+              cluster_names: sds
+              refresh_delay: 60s
+      - name: petstore
+        connect_timeout: 0.50s
+        type: eds
+        lb_policy: round_robin
+        outlier_detection:
+          consecutive_5xx: 3
+          interval: 10s
+          base_ejection_time: 10s
+          max_ejection_percent: 100
+        common_lb_config:
+          healthy_panic_threshold:
+            value: 0.0
+        eds_cluster_config:
+          eds_config:
+            api_config_source:
+              api_type: REST_LEGACY
+              cluster_names: sds
+              refresh_delay: 60s
+      - name: zipkin
+        connect_timeout: 1s
+        type: strict_dns
+        lb_policy: round_robin
+        hosts:
+        - socket_address:
+            address: zipkin
+            port_value: 80
+    tracing:
+      http:
+        name: envoy.zipkin
+        config:
+          collector_cluster: zipkin
+          collector_endpoint: "/api/v1/spans"
+    admin:
+      access_log_path: "/dev/null"
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8081
+
+---
+
+#########################
+##  DEPLOYMENT CONFIG  ##
+#########################
+apiVersion: v1
+kind: DeploymentConfig
+metadata:
+  labels:
+    app: secure-ingress
+  name: secure-ingress
+spec:
+  replicas: 1
+  selector:
+    app: secure-ingress
+  strategy:
+    activeDeadlineSeconds: 21600
+    resources: {}
+    rollingParams:
+      intervalSeconds: 1
+      maxSurge: 25%
+      maxUnavailable: 25%
+      timeoutSeconds: 600
+      updatePeriodSeconds: 1
+    type: Rolling
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: secure-ingress
+    spec:
+      containers:
+      - image: envoyproxy/envoy:v1.8.0
+        imagePullPolicy: Always
+        name: envoy
+        ports:
+        - containerPort: 10000
+          protocol: TCP
+        command:
+        - "/usr/local/bin/envoy"
+        args:
+        - "--config-path /temp/config/envoy.yaml"
+        - "--mode serve"
+        - "--service-cluster secure-ingress"
+        - "--service-node secure-ingress"
+        resources: {}
+        stdin: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        tty: true
+        volumeMounts:
+        - mountPath: /temp/config
+          name: config
+      volumes:
+      - configMap:
+          items:
+          - key: envoy_config.yaml
+            path: envoy.yaml
+          name: secure-ingress
+        name: config
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+  test: false
+  triggers:
+  - type: ConfigChange
+
+---
+
+#########################
+##       SERVICE       ##
+#########################
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: secure-ingress
+  name: secure-ingress
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: 80-10000
+    port: 80
+    protocol: TCP
+    targetPort: 10000
+  selector:
+    app: secure-ingress
+  sessionAffinity: None
+  type: LoadBalancer
+
+---
+
+#########################
+##        ROUTE        ##
+#########################
+apiVersion: v1
+kind: Route
+metadata:
+  labels:
+    app: secure-ingress
+  name: secure-ingress
+spec:
+  port:
+    targetPort: 80-10000
+  to:
+    kind: Service
+    name: secure-ingress
+  wildcardPolicy: None
